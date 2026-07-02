@@ -42,8 +42,8 @@ def process_training_data(sheet_url, csv_filepath, target_tab_name, log_callback
     # Calendly might have 'Email', 'Name' instead of 'Email Address' and 'Full Name'. We'll try to find the best match.
     email_col = next((col for col in calendly_df.columns if 'email' in col.lower()), None)
     name_col = next((col for col in calendly_df.columns if 'name' in col.lower() and 'event' not in col.lower()), None)
-    store_col = next((col for col in calendly_df.columns if 'store number' in col.lower()), None)
-    emp_col = next((col for col in calendly_df.columns if 'employee' in col.lower() or 'id' in col.lower()), None)
+    store_cols = [col for col in calendly_df.columns if 'store number' in col.lower()]
+    emp_cols = [col for col in calendly_df.columns if 'employee' in col.lower() or 'id' in col.lower()]
     
     if not email_col or not name_col:
         log_callback("⚠️ Warning: Could not find strict 'Email' or 'Name' columns in Calendly CSV. Matching might fail.")
@@ -54,9 +54,23 @@ def process_training_data(sheet_url, csv_filepath, target_tab_name, log_callback
         email_key = normalize_key(row.get(email_col, '')) if email_col else ''
         name_key = normalize_key(row.get(name_col, '')) if name_col else ''
         
+        store_val = 'N/A'
+        for col in store_cols:
+            val = str(row.get(col, '')).strip()
+            if val and val.lower() != 'nan':
+                store_val = val
+                break
+                
+        emp_val = 'N/A'
+        for col in emp_cols:
+            val = str(row.get(col, '')).strip()
+            if val and val.lower() != 'nan':
+                emp_val = val
+                break
+        
         data = {
-            'Store Number': row.get(store_col, 'N/A') if store_col else 'N/A',
-            'Employee ID': row.get(emp_col, 'N/A') if emp_col else 'N/A'
+            'Store Number': store_val,
+            'Employee ID': emp_val
         }
         
         if email_key:
