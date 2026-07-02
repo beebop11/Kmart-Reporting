@@ -27,13 +27,13 @@ def process_training_data(sheet_url, csv_filepath, target_tab_name, log_callback
     if not session_data:
         raise ValueError("The provided Google Sheet is empty or could not be read.")
     
-    session_df = pd.DataFrame(session_data)
+    session_df = pd.DataFrame(session_data).fillna("")
     log_callback(f"Successfully read {len(session_df)} rows from Session Sheet.")
     
     # 3. Read Calendly CSV
     log_callback("Parsing uploaded Calendly CSV file...")
     try:
-        calendly_df = pd.read_csv(csv_filepath)
+        calendly_df = pd.read_csv(csv_filepath).fillna("")
         log_callback(f"Read {len(calendly_df)} rows from Calendly CSV.")
     except Exception as e:
         raise ValueError(f"Failed to read CSV file: {str(e)}")
