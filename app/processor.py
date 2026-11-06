@@ -15,6 +15,89 @@ def normalize_key(text):
         return ""
     return str(text).strip().lower()
 
+# Exact headers in the HERO bookings export (kmart-bookings-*.csv).
+BOOKINGS_EXPORT_COLUMNS = {
+    'email': 'Email',
+    'first_name': 'First name',
+    'last_name': 'Last name',
+    'store_number': 'Their store number',
+    'staff_id': 'Staff ID number',
+}
+
+def find_column(columns, wanted):
+    """Return the real header that matches `wanted`, ignoring case and surrounding spaces."""
+    return next((col for col in columns if col.strip().lower() == wanted.lower()), None)
+
+def is_bookings_export(columns):
+    """The bookings export is recognised by its store-number / staff-ID headers."""
+    return bool(find_column(columns, BOOKINGS_EXPORT_COLUMNS['store_number'])
+                or find_column(columns, BOOKINGS_EXPORT_COLUMNS['staff_id']))
+
+def build_bookings_export_lookup(df, log_callback):
+    """Lookup from the HERO bookings export, matched on exact column names."""
+    cols = {key: find_column(df.columns, header) for key, header in BOOKINGS_EXPORT_COLUMNS.items()}
+    missing = [BOOKINGS_EXPORT_COLUMNS[key] for key, col in cols.items() if not col]
+    if missing:
+        names = ", ".join(f"'{m}'" for m in missing)
+        raise ValueError(f"Can't find {names} in the uploaded export. Check it is the bookings export and the columns haven't been renamed.")
+
+    log_callback("Detected bookings export format.")
+    lookup = {}
+    for _, row in df.iterrows():
+        store_val = str(row[cols['store_number']]).strip() or 'N/A'
+        emp_val = str(row[cols['staff_id']]).strip() or 'N/A'
+        data = {'Store Number': store_val, 'Employee ID': emp_val}
+
+        email_key = normalize_key(row[cols['email']])
+        full_name = f"{str(row[cols['first_name']]).strip()} {str(row[cols['last_name']]).strip()}"
+        name_key = normalize_key(full_name)
+
+        if email_key:
+            lookup[email_key] = data
+        if name_key:
+            lookup[name_key] = data
+    return lookup
+
+def build_calendly_lookup(calendly_df, log_callback):
+    """Lookup from an older Calendly CSV, matched on keywords in the headers."""
+    email_col = next((col for col in calendly_df.columns if 'email' in col.lower()), None)
+    name_col = next((col for col in calendly_df.columns if 'name' in col.lower() and 'event' not in col.lower()), None)
+    store_cols = [col for col in calendly_df.columns if 'store number' in col.lower()]
+    emp_cols = [col for col in calendly_df.columns if 'employee' in col.lower() or 'id' in col.lower()]
+
+    if not email_col or not name_col:
+        log_callback("⚠️ Warning: Could not find strict 'Email' or 'Name' columns in Calendly CSV. Matching might fail.")
+
+    calendly_lookup = {}
+    for _, row in calendly_df.iterrows():
+        email_key = normalize_key(row.get(email_col, '')) if email_col else ''
+        name_key = normalize_key(row.get(name_col, '')) if name_col else ''
+
+        store_val = 'N/A'
+        for col in store_cols:
+            val = str(row.get(col, '')).strip()
+            if val and val.lower() != 'nan':
+                store_val = val
+                break
+
+        emp_val = 'N/A'
+        for col in emp_cols:
+            val = str(row.get(col, '')).strip()
+            if val and val.lower() != 'nan':
+                emp_val = val
+                break
+
+        data = {
+            'Store Number': store_val,
+            'Employee ID': emp_val
+        }
+
+        if email_key:
+            calendly_lookup[email_key] = data
+        if name_key:
+            calendly_lookup[name_key] = data
+    return calendly_lookup
+
 def process_training_data(sheet_url, csv_filepath, target_tab_name, log_callback):
     client = SheetsClient(log_callback)
     
@@ -30,53 +113,20 @@ def process_training_data(sheet_url, csv_filepath, target_tab_name, log_callback
     session_df = pd.DataFrame(session_data).fillna("")
     log_callback(f"Successfully read {len(session_df)} rows from Session Sheet.")
     
-    # 3. Read Calendly CSV
-    log_callback("Parsing uploaded Calendly CSV file...")
+    # 3. Read the uploaded bookings export (or an older Calendly CSV)
+    log_callback("Parsing uploaded bookings export...")
     try:
-        calendly_df = pd.read_csv(csv_filepath).fillna("")
-        log_callback(f"Read {len(calendly_df)} rows from Calendly CSV.")
+        # Read every value as text so Staff IDs keep their leading zeros (00020670, not 20670).
+        calendly_df = pd.read_csv(csv_filepath, dtype=str, keep_default_na=False)
+        log_callback(f"Read {len(calendly_df)} rows from the uploaded file.")
     except Exception as e:
         raise ValueError(f"Failed to read CSV file: {str(e)}")
-        
-    # Standardize column names if needed, we assume 'Email Address' and 'Full Name', 'Store Number', 'Employee ID'
-    # Calendly might have 'Email', 'Name' instead of 'Email Address' and 'Full Name'. We'll try to find the best match.
-    email_col = next((col for col in calendly_df.columns if 'email' in col.lower()), None)
-    name_col = next((col for col in calendly_df.columns if 'name' in col.lower() and 'event' not in col.lower()), None)
-    store_cols = [col for col in calendly_df.columns if 'store number' in col.lower()]
-    emp_cols = [col for col in calendly_df.columns if 'employee' in col.lower() or 'id' in col.lower()]
-    
-    if not email_col or not name_col:
-        log_callback("⚠️ Warning: Could not find strict 'Email' or 'Name' columns in Calendly CSV. Matching might fail.")
 
-    # Convert Calendly to a lookup dictionary
-    calendly_lookup = {}
-    for _, row in calendly_df.iterrows():
-        email_key = normalize_key(row.get(email_col, '')) if email_col else ''
-        name_key = normalize_key(row.get(name_col, '')) if name_col else ''
-        
-        store_val = 'N/A'
-        for col in store_cols:
-            val = str(row.get(col, '')).strip()
-            if val and val.lower() != 'nan':
-                store_val = val
-                break
-                
-        emp_val = 'N/A'
-        for col in emp_cols:
-            val = str(row.get(col, '')).strip()
-            if val and val.lower() != 'nan':
-                emp_val = val
-                break
-        
-        data = {
-            'Store Number': store_val,
-            'Employee ID': emp_val
-        }
-        
-        if email_key:
-            calendly_lookup[email_key] = data
-        if name_key:
-            calendly_lookup[name_key] = data
+    if is_bookings_export(calendly_df.columns):
+        calendly_lookup = build_bookings_export_lookup(calendly_df, log_callback)
+    else:
+        log_callback("Bookings export columns not found - reading as an older Calendly CSV.")
+        calendly_lookup = build_calendly_lookup(calendly_df, log_callback)
 
     active_rows = []
     absent_rows = []
