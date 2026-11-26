@@ -44,6 +44,40 @@ def with_retry(max_retries=5, initial_backoff=1):
         return wrapper
     return decorator
 
+def _column_letter(index):
+    """0 -> A, 25 -> Z, 26 -> AA."""
+    letters = ""
+    index += 1
+    while index:
+        index, rem = divmod(index - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
+
+def records_from_values(values):
+    """Rows as dicts, like gspread's get_all_records, but a blank or repeated
+    heading never stops the read (26 Nov 2026: the Kmart Robina session sheet
+    has unit code and unit name in columns K and L with no heading, and
+    get_all_records refused with "the header row in the worksheet is not
+    unique"). A blank heading becomes "Column K"; a repeated one gets " (2)".
+    Values are numericised exactly as get_all_records does."""
+    from gspread.utils import numericise_all
+    if not values:
+        return []
+    width = max(len(r) for r in values)
+    headers, seen = [], {}
+    for i in range(width):
+        name = str(values[0][i]).strip() if i < len(values[0]) else ""
+        name = name or f"Column {_column_letter(i)}"
+        seen[name] = seen.get(name, 0) + 1
+        headers.append(name if seen[name] == 1 else f"{name} ({seen[name]})")
+    records = []
+    for row in values[1:]:
+        padded = list(row) + [""] * (width - len(row))
+        records.append(dict(zip(headers, numericise_all(padded))))
+    return records
+
+
 class SheetsClient:
     def __init__(self, log_callback=None):
         self.client = get_client()
@@ -63,7 +97,7 @@ class SheetsClient:
             worksheet = sheet.get_worksheet(0)
             
         self.log(f"Reading data from '{worksheet.title}'...")
-        return worksheet.get_all_records()
+        return records_from_values(worksheet.get_values())
 
     @with_retry()
     def append_to_master(self, active_rows, absent_rows, target_tab_name, summary_stats=None):
